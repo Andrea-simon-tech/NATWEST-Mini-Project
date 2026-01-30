@@ -1,0 +1,89 @@
+create database natwest_analytics;
+use natwest_analytics;
+select * from raw_transaction_data;
+select count(*) as total_rows from raw_transaction_data;
+select * from raw_transaction_data limit 10;
+select sum(customer_id is null or customer_id = ' ') as missing_customer_id,
+sum(transaction_date is null or transaction_date = ' ') as missing_transaction_date,
+sum(transaction_amount is null or transaction_amount = ' ') as missing_amount from raw_transaction_data;
+
+create table analytic_transaction (customer_id varchar(50),
+transaction_date date,
+transaction_amt decimal(12,2),
+account_balance decimal(12,2),
+account_type varchar (50),
+investment_type varchar(50));
+insert into analytic_transaction 
+select customer_id, str_to_date(transaction_date, '%Y-%m-%d'),
+cast(transaction_amount as decimal (12,2)),
+cast(total_balance as decimal (12,2)),
+account_type, investment_type
+from raw_transaction_data where transaction_amount is not null;
+select count(*) from analytic_transaction;
+
+#Cleaning 
+CREATE VIEW clean_transactions AS
+SELECT *
+FROM raw_transaction_data
+WHERE customer_id IS NOT NULL
+  AND transaction_date IS NOT NULL
+  AND transaction_amount IS NOT NULL;
+
+select * from clean_transactions limit 10;
+
+#Transaction direction
+create view enriched_transactions as 
+select *, 
+case when transaction_amount < 0 then 'Debit' 
+else 'Credit'
+end as transaction_direction from clean_transactions;
+select * from enriched_transactions limit 10;
+
+#Logically invalid
+create table valid_transaction as 
+select * from enriched_transactions 
+where transaction_amount <> 0	
+and (total_balance is null or total_balance >=0);
+select * from valid_transaction;
+
+#Monthly_summary 
+create table monthly_summary as 
+select customer_id, date_format(transaction_date, '%Y,%m,%01') as month, 
+count(*) as transaction_count, avg(transaction_amount) as avg_transaction_amount,
+stddev(transaction_amount) as transaction_volatality,
+avg(total_balance) as avg_balance 
+from valid_transaction
+group by customer_id, date_format(transaction_date, '%Y,%m,%01');
+select * from monthly_summary
+
+
+#month to month behaviour
+CREATE TABLE customer_trends AS
+SELECT
+*,
+LAG(transaction_count)OVER (PARTITION BY customer_id ORDER BY month)AS prev_transaction_count,
+LAG(avg_balance)OVER (PARTITION BY customer_id ORDER BY month)AS prev_avg_balance
+FROM monthly_summary;
+select * from customer_trends;
+
+#Early risk flags;
+create table customer_risk_flags as 
+select *, 
+case 
+when 
+prev_transaction_count is not null 
+and prev_avg_balance is not null 
+and transaction_count < prev_transaction_count * 0.7 
+and avg_balance < prev_avg_balance * 0.75 
+then 'Early_Risk'
+else 'Low_Risk'
+End as risk_flag
+from customer_trends;
+select * from customer_risk_flags;
+
+#Final Dataset for Dashboard 
+select customer_id, month, transaction_count, avg_transaction_amount,transaction_volatality,avg_balance,risk_flag
+ from customer_risk_flags;
+
+
+
